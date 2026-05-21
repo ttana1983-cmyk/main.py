@@ -2,21 +2,32 @@ import os
 from flask import Flask, request, abort
 from linebot import LineBotApi, WebhookHandler
 from linebot.exceptions import InvalidSignatureError
-from linebot.models import (MessageEvent, TextMessage, TextSendMessage, FollowEvent, QuickReply, QuickReplyButton, MessageAction, ImageSendMessage)
+from linebot.models import (
+    MessageEvent, TextMessage, TextSendMessage, FollowEvent,
+    QuickReply, QuickReplyButton, MessageAction, ImageSendMessage
+)
+import google.generativeai as genai
+
+# インポートの予備対策
 try:
     from linebot.models.responses import ShowLoadingAnimationRequest
-except ImportError:
+except:
     ShowLoadingAnimationRequest = None
-import google.generativeai as genai
+
 app = Flask(__name__)
+
+# --- 設定（環境変数から読み込み） ---
 line_bot_api = LineBotApi(os.environ["LINE_CHANNEL_ACCESS_TOKEN"])
 handler = WebhookHandler(os.environ["LINE_CHANNEL_SECRET"])
 genai.configure(api_key=os.environ["GEMINI_API_KEY"])
-model = genai.GenerativeModel("models/gemini-2.0-flash")
-# LINEで表示可能なGIFの直接リンク（プレビューも共通）
+model = genai.GenerativeModel("gemini-2.0-flash") # モデル名をシンプルに修正
+
+# ねこシェフGIF（LINE公式が推奨するHTTPS直リンク形式）
 GIF_URL = "https://media.tenor.com/C7fC04XzR_AAAAAi/bobacat-psps.gif"
+
 def create_qr(options):
     return QuickReply(items=[QuickReplyButton(action=MessageAction(label=opt, text=opt)) for opt in options])
+
 @app.route("/callback", methods=['POST'])
 def callback():
     signature = request.headers.get('X-Line-Signature', '')
@@ -26,17 +37,20 @@ def callback():
     except InvalidSignatureError:
         abort(400)
     return 'OK'
+
 @handler.add(FollowEvent)
 def handle_follow(event):
     line_bot_api.reply_message(event.reply_token, TextSendMessage(text="友だち追加ありがとうございます！Takashiです😊\nまずは【男性の人数】を教えてください👇", quick_reply=create_qr(["男性0人", "男性1人", "男性2人", "男性3人以上"])))
+
 @handler.add(MessageEvent, message=TextMessage)
 def handle_message(event):
     msg = event.message.text
     uid = event.source.user_id
+
+    # 1. 進行フロー
     if msg in ["メニュー", "最初から", "戻る", "↩️戻る"]:
         line_bot_api.reply_message(event.reply_token, TextSendMessage(text="こんにちは！今からどんなご飯にしますか？😊", quick_reply=create_qr(["☀️朝ごはん", "🍱お昼ご飯", "🌙晩ご飯", "⚙️再設定"])))
-        return
-    if "男性" in msg:
+    elif "男性" in msg:
         line_bot_api.reply_message(event.reply_token, TextSendMessage(text="次は【女性の人数】を教えてください✨", quick_reply=create_qr(["女性0人", "女性1人", "女性2人", "女性3人以上"])))
     elif "女性" in msg:
         line_bot_api.reply_message(event.reply_token, TextSendMessage(text="お子さんは？👶", quick_reply=create_qr(["いない", "乳幼児", "幼児", "小学生", "中学生"])))
@@ -52,19 +66,35 @@ def handle_message(event):
         line_bot_api.reply_message(event.reply_token, TextSendMessage(text=f"【{msg}】ですね！了解です👍\n冷蔵庫にある「使いたい食材」を入力してください。"))
     elif msg == "⚙️再設定":
         line_bot_api.reply_message(event.reply_token, TextSendMessage(text="再設定します。まずは【男性の人数】を教えてください👇", quick_reply=create_qr(["男性0人", "男性1人", "男性2人", "男性3人以上"])))
+    
+    # 2. 【ここが本番】レシピ生成
     else:
-        # アニメーション
+        # アニメーション（三点リーダー）
         if ShowLoadingAnimationRequest:
-            try: line_bot_api.show_loading_animation(ShowLoadingAnimationRequest(chat_id=uid, loading_seconds=30))
+            try: line_bot_api.show_loading_animation(ShowLoadingAnimationRequest(chat_id=uid, loading_seconds=20))
             except: pass
-        # GIF表示（プレビューURLも追加して確実に表示させる）
-        try: line_bot_api.push_message(uid, ImageSendMessage(original_content_url=GIF_URL, preview_image_url=GIF_URL))
-        except: pass
-        line_bot_api.push_message(uid, TextSendMessage(text="オーダー入りました！ねこシェフ調理中...🐾"))
-        # 超高速プロンプト
-        p = f"元ラーメン店長として、家族構成と食材({msg})に合う献立を1つ、簡潔にレシピとコツを教えて。300文字以内厳守。"
-        res = model.generate_content(p)
-        line_bot_api.push_message(uid, TextSendMessage(text="🔔 ピーッ！＼ チン！ ／"))
-        line_bot_api.push_message(uid, TextSendMessage(text=f"特製メニュー完成！✨\n\n{res.text}"))
+        
+        # 確実に動くように、まずはテキストで返答
+        line_bot_api.push_message(uid, TextSendMessage(text="オーダー入りました！ねこシェフが調理を開始します🐾"))
+
+        # ねこシェフGIFの送信（エラー回避のためtry-exceptで囲む）
+        try:
+            line_bot_api.push_message(uid, ImageSendMessage(original_content_url=GIF_URL, preview_image_url=GIF_URL))
+        except Exception as e:
+            print(f"GIF Error: {e}")
+
+        # AI生成（レシピ）
+        try:
+            prompt = f"家族構成と食材({msg})に合う献立を、元ラーメン店長として1つ提案してください。簡潔なレシピとコツを300文字以内で。"
+            response = model.generate_content(prompt)
+            
+            # 「チン！」の演出
+            line_bot_api.push_message(uid, TextSendMessage(text="🔔 ピーッ！＼ チン！ ／"))
+            # レシピ送信
+            line_bot_api.push_message(uid, TextSendMessage(text=f"特製メニュー完成です！✨\n\n{response.text}"))
+        except Exception as e:
+            line_bot_api.push_message(uid, TextSendMessage(text="ごめんなさい！店長がちょっと考え込みすぎてしまいました。もう一度食材を教えてください。"))
+            print(f"AI Error: {e}")
+
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)))
