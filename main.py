@@ -19,7 +19,7 @@ app = Flask(__name__)
 # --- 環境設定 ---
 line_bot_api = LineBotApi(os.environ["LINE_CHANNEL_ACCESS_TOKEN"])
 handler = WebhookHandler(os.environ["LINE_CHANNEL_SECRET"])
-genai.configure(api_key=os.environ["GOOGLE_API_KEY"])
+genai.configure(api_key=os.environ["GEMINI_API_KEY"])
 model = genai.GenerativeModel("models/gemini-2.0-flash")
 
 # --- 便利関数：ボタン（クイックリプライ）作成 ---
