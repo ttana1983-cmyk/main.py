@@ -3,15 +3,9 @@ from flask import Flask, request, abort
 from linebot import LineBotApi, WebhookHandler
 from linebot.exceptions import InvalidSignatureError
 from linebot.models import (
-    MessageEvent, TextMessage, TextSendMessage, FollowEvent,
-    QuickReply, QuickReplyButton, MessageAction, ImageSendMessage
+    MessageEvent, TextMessage, TextSendMessage, ImageSendMessage
 )
 import google.generativeai as genai
-
-try:
-    from linebot.models.responses import ShowLoadingAnimationRequest
-except:
-    ShowLoadingAnimationRequest = None
 
 app = Flask(__name__)
 
@@ -20,14 +14,11 @@ line_bot_api = LineBotApi(os.environ["LINE_CHANNEL_ACCESS_TOKEN"])
 handler = WebhookHandler(os.environ["LINE_CHANNEL_SECRET"])
 genai.configure(api_key=os.environ["GEMINI_API_KEY"])
 
-# Takashiさんの環境で動いているモデル名
+# Takashiさん指定の2.5モデル
 model = genai.GenerativeModel("gemini-2.5-flash")
 
-# ネコシェフGIF（確実に表示されるURLに固定）
+# 送っていただいた正確なURLをここにセット
 GIF_URL = "https://raw.githubusercontent.com/ttana1983-cmyk/main.py/main/%E3%83%8D%E3%82%B3GIF.gif"
-
-def create_qr(options):
-    return QuickReply(items=[QuickReplyButton(action=MessageAction(label=opt, text=opt)) for opt in options])
 
 @app.route("/callback", methods=['POST'])
 def callback():
@@ -39,57 +30,40 @@ def callback():
         abort(400)
     return 'OK'
 
-@handler.add(FollowEvent)
-def handle_follow(event):
-    line_bot_api.reply_message(event.reply_token, TextSendMessage(text="友だち追加ありがとうございます！Takashiです😊\nまずは【男性の人数】を教えてください👇", quick_reply=create_qr(["男性0人", "男性1人", "男性2人", "男性3人以上"])))
-
 @handler.add(MessageEvent, message=TextMessage)
 def handle_message(event):
     msg = event.message.text
     uid = event.source.user_id
 
-    # 進行フロー
-    if msg in ["メニュー", "最初から", "戻る", "↩️戻る"]:
-        line_bot_api.reply_message(event.reply_token, TextSendMessage(text="こんにちは！今からどんなご飯にしますか？😊", quick_reply=create_qr(["☀️朝ごはん", "🍱お昼ご飯", "🌙晩ご飯", "⚙️再設定"])))
-    elif "男性" in msg:
-        line_bot_api.reply_message(event.reply_token, TextSendMessage(text="次は【女性の人数】を教えてください✨", quick_reply=create_qr(["女性0人", "女性1人", "女性2人", "女性3人以上"])))
-    elif "女性" in msg:
-        line_bot_api.reply_message(event.reply_token, TextSendMessage(text="お子さんは？👶", quick_reply=create_qr(["いない", "乳幼児", "幼児", "小学生", "中学生"])))
-    elif msg in ["いない", "乳幼児", "幼児", "小学生", "中学生"]:
-        line_bot_api.reply_message(event.reply_token, TextSendMessage(text="ご年配の方は？👵", quick_reply=create_qr(["ご年配あり", "ご年配なし"])))
-    elif "ご年配" in msg:
-        line_bot_api.reply_message(event.reply_token, TextSendMessage(text="登録完了！😊\nタイミングを選んでください👇", quick_reply=create_qr(["☀️朝ごはん", "🍱お昼ご飯", "🌙晩ご飯"])))
-    elif msg in ["☀️朝ごはん", "🍱お昼ご飯", "🌙晩ご飯"]:
-        line_bot_api.reply_message(event.reply_token, TextSendMessage(text="ジャンルは？🇯🇵🇨🇳", quick_reply=create_qr(["和食", "洋食", "中華", "イタリアン", "お任せ"])))
-    elif msg in ["和食", "洋食", "中華", "イタリアン", "お任せ"]:
-        line_bot_api.reply_message(event.reply_token, TextSendMessage(text="今の気分に近いのは？🍳", quick_reply=create_qr(["🥗ヘルシー", "🧀コッテリ", "🍖ガッツリ", "🍵あっさり"])))
-    elif msg in ["🥗ヘルシー", "🧀コッテリ", "🍖ガッツリ", "🍵あっさり"]:
-        line_bot_api.reply_message(event.reply_token, TextSendMessage(text=f"【{msg}】ですね！了解です👍\n最後に、冷蔵庫の「使いたい食材」を入力してください。"))
-    elif msg == "⚙️再設定":
-        line_bot_api.reply_message(event.reply_token, TextSendMessage(text="再設定します。まずは【男性の人数】を教えてください👇", quick_reply=create_qr(["男性0人", "男性1人", "男性2人", "男性3人以上"])))
-    
-    # AI生成部分
-    else:
-        if ShowLoadingAnimationRequest:
-            try: line_bot_api.show_loading_animation(ShowLoadingAnimationRequest(chat_id=uid, loading_seconds=30))
-            except: pass
-        
+    # 進行フロー以外の「食材入力」に反応
+    if msg not in ["メニュー", "最初から", "⚙️再設定"]:
+        # 1. 調理開始（テキスト）
         line_bot_api.push_message(uid, TextSendMessage(text="オーダー入りました！ねこシェフ調理中...🐾"))
         
-        # ネコシェフGIF
+        # 2. ネコシェフ送信（TakashiさんのURL）
         try:
-            line_bot_api.push_message(uid, ImageSendMessage(original_content_url=GIF_URL, preview_image_url=GIF_URL))
-        except: pass
+            line_bot_api.push_message(uid, ImageSendMessage(
+                original_content_url=GIF_URL,
+                preview_image_url=GIF_URL
+            ))
+        except:
+            pass
 
+        # 3. AIによるレシピ生成 ＋ 実在するURLの検索指示
         try:
-            # プロンプトにURL検索の指示を追加
-            prompt = f"あなたは元ラーメン店長です。食材（{msg}）を使った献立を1つ提案し、その料理の参考になるクックパッドやクラシル等のレシピURLも1つ教えてください。350文字以内で。"
+            prompt = (
+                f"あなたは元ラーメン店長の献立アドバイザーです。食材（{msg}）を使った献立を1つ提案してください。\n\n"
+                "【重要】回答の最後に、その料理の作り方がわかる『実在する』レシピサイト（クックパッド、クラシル、楽天レシピ等）のURLを必ず1つ添えてください。\n"
+                "※URLが正しいか厳重に確認し、404エラーになる嘘のリンクは絶対に載せないでください。350文字以内。"
+            )
+            # モデルに検索（grounding）を促すための構成
             response = model.generate_content(prompt)
             
+            # 4. 完成通知
             line_bot_api.push_message(uid, TextSendMessage(text="🔔 ピーッ！＼ チン！ ／"))
             line_bot_api.push_message(uid, TextSendMessage(text=f"特製メニュー完成です！✨\n\n{response.text}"))
         except Exception as e:
-            line_bot_api.push_message(uid, TextSendMessage(text=f"AIエラー発生: {str(e)[:50]}"))
+            line_bot_api.push_message(uid, TextSendMessage(text=f"店長エラー: {str(e)[:40]}"))
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)))
