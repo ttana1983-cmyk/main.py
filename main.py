@@ -56,7 +56,7 @@ def handle_message(event):
     except Exception as e:
         # もしまた404が出るなら、こちらを試すように自動で切り替えます
         try:
-            model = genai.GenerativeModel('gemini-1.5-flash-latest')
+            model = genai.GenerativeModel('gemini-2.5-flash')
             response = model.generate_content(prompt)
             reply_text = response.text
         except:
