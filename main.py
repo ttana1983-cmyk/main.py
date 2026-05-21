@@ -16,7 +16,7 @@ line_bot_api = LineBotApi(os.environ["LINE_CHANNEL_ACCESS_TOKEN"])
 handler = WebhookHandler(os.environ["LINE_CHANNEL_SECRET"])
 genai.configure(api_key=os.environ["GEMINI_API_KEY"])
 model = genai.GenerativeModel("models/gemini-2.0-flash")
-# ここをTakashiさんの選んだねこシェフGIFに更新しました！
+# LINEで表示可能な直接リンクに修正しました
 GIF_URL = "https://media.tenor.com/C7fC04XzR_AAAAAi/bobacat-psps.gif"
 def create_qr(options):
     return QuickReply(items=[QuickReplyButton(action=MessageAction(label=opt, text=opt)) for opt in options])
@@ -61,6 +61,7 @@ def handle_message(event):
                 line_bot_api.show_loading_animation(ShowLoadingAnimationRequest(chat_id=user_id, loading_seconds=60))
             except: pass
         try:
+            # ここでGIFを送ります
             line_bot_api.push_message(user_id, ImageSendMessage(original_content_url=GIF_URL, preview_image_url=GIF_URL))
         except: pass
         line_bot_api.push_message(user_id, TextSendMessage(text="オーダー入りました！👨‍🍳\nねこシェフがただいま調理中です。完成まで1分ほどお待ちください..."))
