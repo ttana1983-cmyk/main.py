@@ -31,7 +31,7 @@ def callback():
         abort(400)
     return 'OK'
 
-# --- 友だち追加された時の最初の質問 ---
+# --- 友だち追加された時 ---
 @handler.add(FollowEvent)
 def handle_follow(event):
     line_bot_api.reply_message(event.reply_token, TextSendMessage(
@@ -39,13 +39,21 @@ def handle_follow(event):
         quick_reply=create_qr(["男性0人", "男性1人", "男性2人", "男性3人以上"])
     ))
 
-# --- メッセージを受け取った時の処理（しりとりロジック） ---
+# --- メッセージ受信時のメインロジック ---
 @handler.add(MessageEvent, message=TextMessage)
 def handle_message(event):
     user_message = event.message.text
     user_id = event.source.user_id
 
-    # 1. 男性の回答が来たら → 女性を聞く
+    # 【新設】「メニュー」や「戻る」が来たら最初の選択肢を出す
+    if user_message in ["メニュー", "最初から", "戻る", "↩️戻る"]:
+        line_bot_api.reply_message(event.reply_token, TextSendMessage(
+            text="こんにちは！今からどんなご飯にしますか？😊",
+            quick_reply=create_qr(["☀️朝ごはん", "🍱お昼ご飯", "🌙晩ご飯", "⚙️再設定"])
+        ))
+        return
+
+    # 1. 家族構成ヒアリング：男性
     if "男性" in user_message:
         line_bot_api.reply_message(event.reply_token, TextSendMessage(
             text="ありがとうございます！次は【女性の人数】を教えてください✨",
@@ -53,7 +61,7 @@ def handle_message(event):
         ))
         return
 
-    # 2. 女性の回答が来たら → お子さんを聞く
+    # 2. 家族構成ヒアリング：女性
     elif "女性" in user_message:
         line_bot_api.reply_message(event.reply_token, TextSendMessage(
             text="お子さん（中学生以下）はいらっしゃいますか？👶",
@@ -61,7 +69,7 @@ def handle_message(event):
         ))
         return
 
-    # 3. お子さんの回答が来たら → ご年配を聞く
+    # 3. 家族構成ヒアリング：子供
     elif user_message in ["いない", "乳幼児", "幼児", "小学生", "中学生"]:
         line_bot_api.reply_message(event.reply_token, TextSendMessage(
             text="最後にご年配の方（65歳以上）はいらっしゃいますか？👵",
@@ -69,37 +77,50 @@ def handle_message(event):
         ))
         return
 
-    # 4. ご年配の回答（初回登録完了） → 最初の献立を出す（ここでAI起動！）
+    # 4. 家族構成完了 ➔ 最初の食事選択へ誘導
     elif "ご年配" in user_message:
+        line_bot_api.reply_message(event.reply_token, TextSendMessage(
+            text="登録完了です！バッチリ把握しました😊\nさっそく、今からどんなご飯にしますか？👇",
+            quick_reply=create_qr(["☀️朝ごはん", "🍱お昼ご飯", "🌙晩ご飯"])
+        ))
+        return
+
+    # 5. タイミング選択 ➔ ジャンル選択へ
+    elif user_message in ["☀️朝ごはん", "🍱お昼ご飯", "🌙晩ご飯"]:
+        line_bot_api.reply_message(event.reply_token, TextSendMessage(
+            text="料理のジャンルは何がよろしいですか？🇯🇵🇨🇳🇫🇷",
+            quick_reply=create_qr(["和食", "洋食", "中華", "フレンチ", "イタリアン", "お任せ"])
+        ))
+        return
+
+    # 6. ジャンル選択 ➔ 気分選択へ
+    elif user_message in ["和食", "洋食", "中華", "フレンチ", "イタリアン", "お任せ"]:
+        line_bot_api.reply_message(event.reply_token, TextSendMessage(
+            text="今の気分はどれに近いですか？🍳",
+            quick_reply=create_qr(["🥗ヘルシー", "🧀コッテリ", "🍖ガッツリ", "🍵あっさり", "↩️戻る"])
+        ))
+        return
+
+    # 7. 気分選択 ➔ AIによる献立生成
+    elif user_message in ["🥗ヘルシー", "🧀コッテリ", "🍖ガッツリ", "🍵あっさり"]:
         line_bot_api.show_loading_animation(ShowLoadingAnimationRequest(chat_id=user_id, loading_seconds=60))
-        line_bot_api.push_message(user_id, TextSendMessage(text="情報をありがとうございます！バッチリ把握しました😊\n今から50秒ほどで、最初のおすすめ献立を考えますね！"))
         
-        prompt = f"家族構成（{user_message}）に合わせた、Takashi流の丁寧な最初のおすすめ献立を1つ提案してください。" # 詳細は省略
+        # ユーザーに安心感を与えるメッセージ（push_messageを使用）
+        line_bot_api.push_message(user_id, TextSendMessage(text="承知しました！元ラーメン店長の経験を活かして、最高の献立を考えています...50秒ほどお待ちください🍳"))
+        
+        # プロンプトの構築（ユーザーの最新の選択を反映）
+        prompt = f"家族構成と、今日の気分（{user_message}）に合わせて、元プロの視点から栄養バランスも考慮した、家庭で再現可能な「最高に旨い献立」を1つ提案してください。作り方のコツも一言添えて。"
+        
         response = model.generate_content(prompt)
         line_bot_api.push_message(user_id, TextSendMessage(text=response.text))
         return
 
-    # --- 2回目以降のメニュー選び ---
-    elif user_message in ["☀️朝ごはん", "🍱お昼ご飯", "🌙晩ご飯"]:
+    # 8. 再設定処理
+    elif user_message == "⚙️再設定":
         line_bot_api.reply_message(event.reply_token, TextSendMessage(
-            text="料理のジャンルは何がよろしいですか？😊",
-            quick_reply=create_qr(["和食", "中華", "洋食", "イタリアン", "お任せ", "甘いもの"])
+            text="家族構成を再登録しますね。まずは【男性の人数】を教えてください👇",
+            quick_reply=create_qr(["男性0人", "男性1人", "男性2人", "男性3人以上"])
         ))
-        return
-
-    elif user_message in ["和食", "中華", "洋食", "イタリアン", "お任せ", "甘いもの"]:
-        line_bot_api.reply_message(event.reply_token, TextSendMessage(
-            text="今の気分はどれに近いですか？🍳",
-            quick_reply=create_qr(["🥗ヘルシー", "🧀コッテリ", "🍖ガッツリ", "🍵あっさり"])
-        ))
-        return
-
-    # 最後の「気分」が選ばれたらAI起動
-    elif user_message in ["🥗ヘルシー", "🧀コッテリ", "🍖ガッツリ", "🍵あっさり"]:
-        line_bot_api.show_loading_animation(ShowLoadingAnimationRequest(chat_id=user_id, loading_seconds=60))
-        prompt = f"条件：{user_message}。これまでの蓄積プロンプトに従い、レシピとプロの助言を出してください。"
-        response = model.generate_content(prompt)
-        line_bot_api.reply_message(event.reply_token, TextSendMessage(text=response.text))
         return
 
 if __name__ == "__main__":
