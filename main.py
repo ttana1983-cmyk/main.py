@@ -8,9 +8,12 @@ from linebot.v3.messaging import (
 )
 from linebot.v3.webhooks import MessageEvent, TextMessageContent
 
-# 最新のGoogle GenAIライブラリを使用
-from google import genai
-from google.genai import types
+# インポートエラーを防ぐための書き方
+try:
+    from google import genai
+except ImportError:
+    # ローカル環境などで万が一入っていない場合のエラー回避
+    print("Error: google-genai library not found. Please install it.")
 
 app = Flask(__name__)
 
@@ -42,19 +45,17 @@ def handle_message(event):
 
     if msg not in ["メニュー", "最初から", "⚙️再設定"]:
         try:
-            # プロンプト（最新モデル gemini-2.0-flash 等も指定可能ですが、一旦 2.5 で）
             prompt = f"""
 あなたは元ラーメン店長の献立アドバイザーです。食材「{msg}」を使った献立を1つ提案してください。
 【重要】実在するレシピURL（クックパッド等）を必ず載せ、300文字以内の職人気質な口調で。
 """
-            # 最新の生成メソッドを使用
+            # モデル名は 2.0-flash が最新で爆速です
             response = client.models.generate_content(
-                model="gemini-2.0-flash", # 最新の高速モデルを推奨
+                model="gemini-2.0-flash", 
                 contents=prompt
             )
             recipe_text = response.text
 
-            # LINE返信
             with ApiClient(configuration) as api_client:
                 line_bot_api = MessagingApi(api_client)
                 line_bot_api.reply_message(
@@ -68,13 +69,13 @@ def handle_message(event):
                     )
                 )
         except Exception as e:
-            print(f"Error detail: {e}")
+            print(f"Error: {e}")
             with ApiClient(configuration) as api_client:
                 line_bot_api = MessagingApi(api_client)
                 line_bot_api.reply_message(
                     ReplyMessageRequest(
                         reply_token=tk,
-                        messages=[TextMessage(text=f"すまねえ、店長エラーだ：{str(e)[:50]}")]
+                        messages=[TextMessage(text=f"店長エラーだ！すまねえ！\n{str(e)[:50]}")]
                     )
                 )
 
