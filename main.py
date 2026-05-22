@@ -37,7 +37,7 @@ def handle_message(event):
         
         # 最新の高速モデル gemini-2.0-flash を使用
         response = client.models.generate_content(
-            model="gemini-2.0-flash", 
+            model="gemini-2.5-flash", 
             contents=prompt
         )
         
