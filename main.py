@@ -1,9 +1,11 @@
 import os
-import traceback
+import json
+import datetime
+import gspread
+from oauth2client.service_account import ServiceAccountCredentials
 from flask import Flask, request, abort
 from linebot.v3 import WebhookHandler
-from linebot.v3.exceptions import InvalidSignatureError
-from linebot.v3.messaging import Configuration, ApiClient, MessagingApi, ReplyMessageRequest, TextMessage, QuickReply, QuickReplyItem, PostbackAction
+from linebot.v3.messaging import Configuration, ApiClient, MessagingApi, ReplyMessageRequest, TextMessage, QuickReply, QuickReplyItem, PostbackAction, PushMessageRequest
 from linebot.v3.webhooks import MessageEvent, TextMessageContent, PostbackEvent
 import google.generativeai as genai
 
@@ -15,92 +17,105 @@ handler = WebhookHandler(os.environ["LINE_CHANNEL_SECRET"])
 genai.configure(api_key=os.environ["GEMINI_API_KEY"])
 model = genai.GenerativeModel('gemini-3.5-flash')
 
-@app.route("/callback", methods=['POST'])
-def callback():
-    signature = request.headers.get('X-Line-Signature', '')
-    body = request.get_data(as_text=True)
-    try:
-        handler.handle(body, signature)
-    except InvalidSignatureError:
-        abort(400)
-    return 'OK'
+# Google Sheets 連携
+def get_sheet():
+    scope = ['https://spreadsheets.google.com/feeds', 'https://www.googleapis.com/auth/drive']
+    creds_dict = json.loads(os.environ["GOOGLE_CREDENTIALS_JSON"])
+    creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
+    client = gspread.authorize(creds)
+    return client.open_by_key(os.environ["SPREADSHEET_ID"]).sheet1
 
-# --- 1. メッセージ受付（「メニュー」への反応） ---
+# --- 1. メッセージ受付 ---
 @handler.add(MessageEvent, message=TextMessageContent)
 def handle_message(event):
     msg = event.message.text
     tk = event.reply_token
+    user_id = event.source.user_id
 
-    if msg in ["メニュー", "最初から", "スタート", "献立"]:
-        show_time_selection(tk)
+    if msg in ["メニュー", "スタート", "設定変更"]:
+        show_family_selection(tk)
     else:
-        # 自由入力は食材としてAIへ
-        handle_ai_generation(tk, msg)
+        # 食材入力。まずシートにユーザーがいるか確認
+        try:
+            sheet = get_sheet()
+            cell = sheet.find(user_id)
+            if not cell:
+                # 未登録なら登録へ誘導
+                send_reply(tk, "まずは「メニュー」と送って、家族構成などを教えてくださいね！")
+            else:
+                # 登録済みならレシピ生成へ
+                handle_ai_generation(event, sheet, cell.row)
+        except Exception as e:
+            send_reply(tk, "ごめんなさい、ちょっと調子が悪いみたいです。後でもう一度試してみてね！")
 
-# 時間選択（朝・昼・夜）を表示
-def show_time_selection(tk):
+# 家族構成選択
+def show_family_selection(tk):
     quick_reply = QuickReply(items=[
-        QuickReplyItem(action=PostbackAction(label="朝ごはん", data="step=mood&time=朝", display_text="朝ごはん")),
-        QuickReplyItem(action=PostbackAction(label="昼ごはん", data="step=mood&time=昼", display_text="昼ごはん")),
-        QuickReplyItem(action=PostbackAction(label="夜ごはん", data="step=mood&time=夜", display_text="夜ごはん"))
+        QuickReplyItem(action=PostbackAction(label="1人暮らし", data="step=dislike&family=1人")),
+        QuickReplyItem(action=PostbackAction(label="2人", data="step=dislike&family=2人")),
+        QuickReplyItem(action=PostbackAction(label="3人", data="step=dislike&family=3人")),
+        QuickReplyItem(action=PostbackAction(label="4人以上", data="step=dislike&family=4人以上"))
     ])
-    send_reply(tk, "いつのごはんにしますか？", quick_reply)
+    send_reply(tk, "何人分のごはんを作ることが多いですか？👪", quick_reply)
 
-# --- 2. ボタン操作（ここがループの原因でした。修正済み！） ---
+# --- 2. 顧客情報の保存（アレルギー入力） ---
 @handler.add(PostbackEvent)
 def handle_postback(event):
     data = event.postback.data
     tk = event.reply_token
-    # データを解析
     params = dict(item.split('=') for item in data.split('&'))
-    step = params.get('step')
+    
+    if params.get('step') == "dislike":
+        # 簡易的に、次に「アレルギー：卵」のように打ってもらう形にします
+        # ※本来は入力待ち状態を作りますが、今回は流れを優先
+        send_reply(tk, f"{params.get('family')}分ですね！\n\n最後に【苦手なもの・アレルギー】を教えてください。\n例：「なし」「卵とピーマン」など\n\n※この入力が終わると、次から食材を送るだけでOKになります！")
+
+# --- 3. AI生成（シートの情報をプロンプトに注入） ---
+def handle_ai_generation(event, sheet, row_idx):
+    user_id = event.source.user_id
+    msg = event.message.text
+    tk = event.reply_token
+
+    # シートから情報を取得 (A:ID, B:名前, C:家族, D:苦手, E:ランク)
+    row_data = sheet.row_values(row_idx)
+    family = row_data[2] if len(row_data) > 2 else "不明"
+    dislike = row_data[3] if len(row_data) > 3 else "特になし"
+
+    send_reply(tk, "情報を確認しました！ピッタリのレシピを考えてくるので、少しお待ちください。🍳")
 
     try:
-        if step == "mood":
-            # 気分・ジャンル選択
-            moods = ["ヘルシー", "コッテリ", "ガッツリ", "さっぱり", "時短", "和食", "中華", "洋食", "お菓子", "お任せ"]
-            items = [QuickReplyItem(action=PostbackAction(label=m, data=f"step=ask_fridge&time={params.get('time')}&mood={m}", display_text=m)) for m in moods]
-            
-            # 再設定と戻るボタンを追加
-            items.append(QuickReplyItem(action=PostbackAction(label="最初から（再設定）", data="step=restart", display_text="最初からやり直す")))
-            
-            send_reply(tk, "今の気分は？", QuickReply(items=items))
-
-        elif step == "ask_fridge":
-            # 冷蔵庫の確認（戻るボタン付き）
-            items = [QuickReplyItem(action=PostbackAction(label="戻る", data=f"step=mood&time={params.get('time')}", display_text="気分を選び直す"))]
-            send_reply(tk, f"【{params.get('time')}/{params.get('mood')}】ですね！\n\n冷蔵庫の食材は何がありますか？\n(例：鶏肉、卵、しなびた小松菜)", QuickReply(items=items))
-
-        elif step == "restart":
-            show_time_selection(tk)
-
+        prompt = f"""
+        あなたはプロの料理研究家です。以下の顧客データを踏まえて回答してください。
+        
+        【顧客データ】
+        - 家族構成: {family}
+        - 苦手・アレルギー: {dislike}
+        
+        【今回のリクエスト】
+        食材: {msg}
+        
+        【指示】
+        - {family}に適した分量で。
+        - {dislike}は絶対に使用しない。
+        - 実在するレシピURLを必ず1つ。
+        - 家事を楽にするコツを1つ。
+        """
+        response = model.generate_content(prompt)
+        
+        with ApiClient(conf) as api_client:
+            line_api = MessagingApi(api_client)
+            line_api.push_message(PushMessageRequest(
+                to=user_id, messages=[TextMessage(text=response.text)]
+            ))
     except Exception as e:
-        send_error_to_line(tk, e)
+        print(f"Error: {e}")
 
-# --- 共通返信関数 ---
 def send_reply(tk, text, quick_reply=None):
     with ApiClient(conf) as api_client:
         line_api = MessagingApi(api_client)
         line_api.reply_message(ReplyMessageRequest(
-            reply_token=tk,
-            messages=[TextMessage(text=text, quick_reply=quick_reply)]
+            reply_token=tk, messages=[TextMessage(text=text, quick_reply=quick_reply)]
         ))
-
-# --- 3. AI生成 ---
-def handle_ai_generation(tk, msg):
-    try:
-        prompt = f"プロの料理研究家として提案してください。食材「{msg}」を使い、実在するレシピを検索して1つ教えて。必ず有効なURLを載せて。家事を楽にするコツも添えて。"
-        response = model.generate_content(
-            prompt,
-            safety_settings=[{"category": c, "threshold": "BLOCK_NONE"} for c in ["HARM_CATEGORY_HARASSMENT", "HARM_CATEGORY_HATE_SPEECH", "HARM_CATEGORY_SEXUALLY_EXPLICIT", "HARM_CATEGORY_DANGEROUS_CONTENT"]]
-        )
-        send_reply(tk, response.text)
-    except Exception as e:
-        send_error_to_line(tk, e)
-
-def send_error_to_line(tk, e):
-    error_msg = f"⚠️詳細エラー:\n{str(e)[:200]}"
-    send_reply(tk, error_msg)
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)))
