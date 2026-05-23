@@ -35,7 +35,8 @@ def handle_message(event):
     try:
         # AIの処理（ここが少し遅くても、上のcallbackが先にOKを返しているので大丈夫）
         response = client.models.generate_content(
-            model="gemini-2.0-flash", 
+            model = genAI.getGenerativeModel(model_name="gemini-2.0-flash")
+
             contents=f"食材「{msg}」の献立とURLを1つ教えて"
         )
         
