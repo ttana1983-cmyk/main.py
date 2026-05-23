@@ -50,7 +50,7 @@ def handle_message(event):
         start_registration(u_id, tk, is_edit=True)
     elif u_id in user_temp_data and user_temp_data[u_id].get("step") == "waiting_allergy":
         user_temp_data[u_id].update({"allergy": msg, "step": "waiting_dislike"})
-        send_reply(tk, "次に【苦手なもの】を教えてください。")
+        send_reply(tk, "次に【アレルギー以外の苦手なもの】を教えてください。")
     elif u_id in user_temp_data and user_temp_data[u_id].get("step") == "waiting_dislike":
         register_new_user(event, msg)
     else:
@@ -88,13 +88,13 @@ def handle_postback(event):
     elif params.get('step') == "edit_force":
         start_registration(u_id, tk, is_edit=True)
     elif params.get('step') == "ask_question":
-        send_reply(tk, "レシピの不明点や、代わりの食材など何でも聞いてくださいね！そのままメッセージを送ってください💬")
+        send_reply(tk, "レシピの不明点や代用の相談など、そのまま送ってくださいね！💬")
     elif params.get('meal'):
         user_temp_data[f"{u_id}_meal"] = {"morning": "朝ごはん", "lunch": "昼ごはん", "dinner": "夜ごはん"}.get(params.get('meal'))
         show_genre_selection(tk, user_temp_data[f"{u_id}_meal"])
     elif params.get('genre'):
         user_temp_data[f"{u_id}_genre"] = params.get('genre')
-        send_reply(tk, f"{params.get('genre')}ですね！食材を教えてください🍳")
+        send_reply(tk, f"{params.get('genre')}ですね！使いたい食材を教えてください🍳")
     elif params.get('step') == "retry":
         try:
             sheet = get_sheet(); cell = sheet.find(u_id); handle_ai_generation(event, sheet, cell.row, is_retry=True)
@@ -107,7 +107,7 @@ def show_meal_selection(tk):
         QuickReplyItem(action=PostbackAction(label="夜ごはん 🌙", data="meal=dinner")),
         QuickReplyItem(action=PostbackAction(label="登録内容変更 ⚙️", data="step=edit_force"))
     ])
-    send_reply(tk, "今日のごはんは何にしましょうか？✨\n（食材や質問を送ってもOK！）", qr)
+    send_reply(tk, "今日のごはんは何にしましょうか？✨\n（1日5回までご利用いただけます）", qr)
 
 def show_genre_selection(tk, meal_type):
     qr = QuickReply(items=[
@@ -144,10 +144,10 @@ def handle_free_consultation(event):
             user_temp_data[f"{u_id}_last_food"] = msg
             handle_ai_generation(event, sheet, cell.row)
         else:
-            send_reply(tk, "プロのアドバイザーがお答えします...📝")
+            send_reply(tk, "カジラク知恵袋がお答えします...📝")
             row = sheet.row_values(cell.row)
             fam = row[2] if len(row) > 2 else "不明"
-            res = model.generate_content(f"あなたは家事のプロ「カジラク知恵袋」です。家族構成{fam}。回答して：{msg}")
+            res = model.generate_content(f"あなたは家事のプロです。家族構成{fam}。回答して：{msg}")
             qr = QuickReply(items=[QuickReplyItem(action=PostbackAction(label="献立を考える 🍳", data="step=reset_meal"))])
             with ApiClient(conf) as c:
                 MessagingApi(c).push_message(PushMessageRequest(to=u_id, messages=[TextMessage(text=res.text, quick_reply=qr)]))
@@ -161,19 +161,20 @@ def handle_ai_generation(event, sheet, row_idx, is_retry=False):
     meal, gen = user_temp_data.get(f"{u_id}_meal", "夜ごはん"), user_temp_data.get(f"{u_id}_genre", "お任せ")
     send_reply(tk, f"【{fam}】向けのレシピを考え中...🍳")
     try:
-        prompt = f"""料理研究家として、家族構成{fam}向けに{meal}({gen})を提案。食材:{food}、アレルギー:{alg}、苦手:{dsl}。
-        【絶対ルール】
-        1. 手順の中で、お子様やご年配向けの「取り分け・味付け変更」のタイミングを具体的に組み込むこと（例：味付け前に子供分を取り出す等）。
-        2. 手順の途中で「ここで子供用を取り分けて、大人は生姜を入れます」のように書くこと。最後に書くのはNG。
-        3. 他のお肉代用案、実在URL、時短テクも親身な口調で。"""
+        prompt = f"""料理研究家として提案。構成:{fam} / 時間:{meal} / ジャンル:{gen} / 食材:{food} / アレルギー:{alg} / 苦手:{dsl}。
+        手順の中で子供用の取り分け等を具体的に書くこと。他のお肉代用案、実在URL、時短テクも。"""
         res = model.generate_content(prompt)
+        
+        # 文末に「1日5回まで」という案内を追加
+        footer = "\n\n※カジラク知恵袋は1日5回までご利用いただけます。"
+        
         qr = QuickReply(items=[
             QuickReplyItem(action=PostbackAction(label="このレシピに質問！ 🙋", data="step=ask_question")),
             QuickReplyItem(action=PostbackAction(label="別のレシピ", data="step=retry")),
             QuickReplyItem(action=PostbackAction(label="最初から", data="step=reset_meal"))
         ])
         with ApiClient(conf) as c:
-            MessagingApi(c).push_message(PushMessageRequest(to=u_id, messages=[TextMessage(text=res.text, quick_reply=qr)]))
+            MessagingApi(c).push_message(PushMessageRequest(to=u_id, messages=[TextMessage(text=res.text + footer, quick_reply=qr)]))
     except Exception as e: print(f"AI Error: {e}")
 
 def send_reply(tk, text, quick_reply=None):
