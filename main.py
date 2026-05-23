@@ -52,13 +52,14 @@ def handle_message(event):
         except:
             start_registration(user_id, tk)
     
-    # 登録フロー：アレルギー入力待ち
+    elif msg == "設定変更":
+        start_registration(user_id, tk, is_edit=True)
+    
     elif user_id in user_temp_data and user_temp_data[user_id].get("step") == "waiting_allergy":
         user_temp_data[user_id]["allergy"] = msg
         user_temp_data[user_id]["step"] = "waiting_dislike"
-        send_reply(tk, "ありがとうございます。次に【苦手なもの（アレルギー以外）】を教えてください。\n（なければ「なし」でOK！）")
+        send_reply(tk, "ありがとうございます。次に【苦手なもの（アレルギー以外）】を教えてください。")
         
-    # 登録フロー：苦手なもの入力待ち（ここで登録完了）
     elif user_id in user_temp_data and user_temp_data[user_id].get("step") == "waiting_dislike":
         register_new_user(event, msg)
         
@@ -74,17 +75,22 @@ def handle_message(event):
         except:
             send_reply(tk, "エラーが発生しました。設定を確認してください。")
 
-def start_registration(user_id, tk):
-    user_temp_data[user_id] = {"counts": {"男性": 0, "女性": 0, "お子様": 0, "ご年配": 0}}
-    show_member_selector(tk, "男性")
+def start_registration(user_id, tk, is_edit=False):
+    user_temp_data[user_id] = {"counts": {"男性": 0, "女性": 0, "お子様": 0, "ご年配": 0}, "is_edit": is_edit}
+    show_member_selector(tk, "男性", is_edit)
 
-def show_member_selector(tk, member_type):
-    quick_reply = QuickReply(items=[
+def show_member_selector(tk, member_type, is_edit=False):
+    items = [
         QuickReplyItem(action=PostbackAction(label="0人", data=f"type={member_type}&num=0")),
         QuickReplyItem(action=PostbackAction(label="1人", data=f"type={member_type}&num=1")),
         QuickReplyItem(action=PostbackAction(label="2人", data=f"type={member_type}&num=2")),
         QuickReplyItem(action=PostbackAction(label="3人以上", data=f"type={member_type}&num=3"))
-    ])
+    ]
+    # 設定変更の時だけ「中断ボタン」を追加
+    if is_edit:
+        items.append(QuickReplyItem(action=PostbackAction(label="変更をやめる ✖", data="step=reset_meal")))
+    
+    quick_reply = QuickReply(items=items)
     send_reply(tk, f"【{member_type}】は何人いますか？", quick_reply)
 
 @handler.add(PostbackEvent)
@@ -106,11 +112,16 @@ def handle_postback(event):
             summary = f"男性{counts['男性']}人、女性{counts['女性']}人、子{counts['お子様']}人、年配{counts['ご年配']}人"
             user_temp_data[user_id]["family_summary"] = summary
             user_temp_data[user_id]["step"] = "waiting_allergy"
-            send_reply(tk, f"構成：{summary}\n\n次に【アレルギーがある食材】を教えてください。\n（なければ「なし」でOK！）")
+            
+            # アレルギー入力時にも中断ボタン
+            items = [QuickReplyItem(action=PostbackAction(label="変更をやめる ✖", data="step=reset_meal"))] if user_temp_data[user_id].get("is_edit") else None
+            send_reply(tk, f"新しい構成：{summary}\n\n次に【アレルギー食材】を教えてください。", QuickReply(items=items) if items else None)
         else:
-            show_member_selector(tk, next_type)
+            show_member_selector(tk, next_type, user_temp_data[user_id].get("is_edit"))
 
     elif params.get('step') == "reset_meal":
+        # 中断されたら一時データを消して、通常の食事選択へ
+        user_temp_data.pop(user_id, None)
         show_meal_selection(tk)
     elif params.get('meal'):
         meal_type = {"morning": "朝ごはん", "lunch": "昼ごはん", "dinner": "夜ごはん"}.get(params.get('meal'))
@@ -154,16 +165,17 @@ def register_new_user(event, dislike_msg):
         sheet = get_sheet()
         cell = sheet.find(user_id)
         if cell:
-            # A:ID, B:名前, C:構成, D:アレルギー, E:苦手, F:ランク, G:日付
             sheet.update_cell(cell.row, 3, summary)
             sheet.update_cell(cell.row, 4, allergy)
             sheet.update_cell(cell.row, 5, dislike_msg)
+            msg = "設定を更新しました！"
         else:
             sheet.append_row([user_id, "ユーザー", summary, allergy, dislike_msg, "Free", datetime.date.today().strftime("%Y/%m/%d")])
+            msg = "ご登録ありがとうございます！"
+        send_reply(event.reply_token, f"{msg}\n構成：{summary}")
         show_meal_selection(event.reply_token)
-    except Exception as e:
-        print(f"Register Error: {e}")
-        send_reply(event.reply_token, "登録エラーです。設定を確認してください。")
+    except:
+        send_reply(event.reply_token, "エラーが発生しました。")
 
 def handle_ai_generation(event, sheet, row_idx, is_retry=False):
     tk = event.reply_token
@@ -172,29 +184,16 @@ def handle_ai_generation(event, sheet, row_idx, is_retry=False):
     family = row_data[2] if len(row_data) > 2 else "不明"
     allergy = row_data[3] if len(row_data) > 3 else "なし"
     dislike = row_data[4] if len(row_data) > 4 else "なし"
-    
     food_msg = user_temp_data.get(f"{user_id}_last_food", "あるもの")
     meal_type = user_temp_data.get(f"{user_id}_meal", "夜ごはん")
     genre = user_temp_data.get(f"{user_id}_genre", "お任せ")
-
     send_reply(tk, f"【{family}】向けのレシピを考えています🍳")
-
     try:
-        prompt = f"""
-        料理研究家として提案してください。
-        構成: {family} / 時間: {meal_type} / ジャンル: {genre} / 食材: {food_msg}
-        ★アレルギー(厳禁): {allergy}
-        ★苦手なもの: {dislike}
-        
-        【重要指示】
-        1. 【アレルギー食材】は絶対に使用しないでください。代用が必要な場合（牛乳→豆乳など）は、具体的な代用案とコツを必ず提案してください。
-        2. 【苦手なもの】は、可能であれば避けるか、細かく刻む、味付けを工夫するなど、克服できる調理法を提案してください。
-        3. 実在URL、時短テク、お子様/ご年配への配慮も忘れずに。
-        """
+        prompt = f"料理研究家として提案。{family}向けの{meal_type}({genre})。食材:{food_msg}。アレルギー(厳禁):{allergy}。苦手:{dislike}。工夫とURL、時短テクを。"
         response = model.generate_content(prompt)
         quick_reply = QuickReply(items=[
-            QuickReplyItem(action=PostbackAction(label="別のレシピを見る", data="step=retry")),
-            QuickReplyItem(action=PostbackAction(label="最初からやり直す", data="step=reset_meal"))
+            QuickReplyItem(action=PostbackAction(label="別のレシピ", data="step=retry")),
+            QuickReplyItem(action=PostbackAction(label="最初から", data="step=reset_meal"))
         ])
         with ApiClient(conf) as api_client:
             line_api = MessagingApi(api_client)
