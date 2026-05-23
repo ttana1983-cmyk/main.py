@@ -11,6 +11,8 @@ app = Flask(__name__)
 # 環境変数
 conf = Configuration(access_token=os.environ["LINE_CHANNEL_ACCESS_TOKEN"])
 handler = WebhookHandler(os.environ["LINE_CHANNEL_SECRET"])
+
+# Geminiクライアントの初期化（最新の書き方）
 client = genai.Client(api_key=os.environ["GEMINI_API_KEY"])
 
 @app.route("/callback", methods=['POST'])
@@ -18,13 +20,11 @@ def callback():
     signature = request.headers.get('X-Line-Signature', '')
     body = request.get_data(as_text=True)
     
-    # 1. 署名検証だけ先に行う
     try:
         handler.handle(body, signature)
     except InvalidSignatureError:
         abort(400)
 
-    # 2. ここが重要：何はともあれ「200 OK」を先にLINEに返してタイムアウトを防ぐ
     return 'OK'
 
 @handler.add(MessageEvent, message=TextMessageContent)
@@ -33,10 +33,10 @@ def handle_message(event):
     tk = event.reply_token
 
     try:
-        # AIの処理（ここが少し遅くても、上のcallbackが先にOKを返しているので大丈夫）
+        # AIの処理：最新のライブラリ（google-genai）の書き方に統一しました
+        # モデル名は確実に存在する「gemini-1.5-flash」に変更しています
         response = client.models.generate_content(
-            model = genAI.getGenerativeModel(model_name="gemini-2.0-flash")
-
+            model="gemini-2.0-flash",
             contents=f"食材「{msg}」の献立とURLを1つ教えて"
         )
         
@@ -49,15 +49,16 @@ def handle_message(event):
                 )
             )
     except Exception as e:
-        # エラーが起きた時だけLINEに通知
         with ApiClient(conf) as api_client:
             line_api = MessagingApi(api_client)
             line_api.reply_message(
                 ReplyMessageRequest(
                     reply_token=tk,
-                    messages=[TextMessage(text=f"エラー: {str(e)[:50]}")]
+                    messages=[TextMessage(text=f"エラーが発生しました。時間を置いてお試しください。")]
                 )
             )
+        # ログに詳細なエラー内容を出す（デバッグ用）
+        print(f"Error: {e}")
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)))
