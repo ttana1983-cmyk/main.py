@@ -29,18 +29,21 @@ def callback():
 @handler.add(MessageEvent, message=TextMessageContent)
 def handle_message(event):
     tk = event.reply_token
-    # メッセージの内容が「最初から」や特定のキーワードでない場合の初期応答
+    # 最初の選択肢を表示
     quick_reply = QuickReply(items=[
         QuickReplyItem(action=PostbackAction(label="朝ごはん", data="step=mood&time=朝", display_text="朝ごはん")),
         QuickReplyItem(action=PostbackAction(label="昼ごはん", data="step=mood&time=昼", display_text="昼ごはん")),
         QuickReplyItem(action=PostbackAction(label="夜ごはん", data="step=mood&time=夜", display_text="夜ごはん"))
     ])
-    with ApiClient(conf) as api_client:
-        line_api = MessagingApi(api_client)
-        line_api.reply_message(ReplyMessageRequest(
-            reply_token=tk,
-            messages=[TextMessage(text="いつのごはんにしますか？", quick_reply=quick_reply)]
-        ))
+    try:
+        with ApiClient(conf) as api_client:
+            line_api = MessagingApi(api_client)
+            line_api.reply_message(ReplyMessageRequest(
+                reply_token=tk,
+                messages=[TextMessage(text="いつのごはんにしますか？", quick_reply=quick_reply)]
+            ))
+    except Exception as e:
+        send_error_to_line(tk, e)
 
 # --- 2. 気分・ジャンルの選択 ---
 @handler.add(PostbackEvent)
@@ -50,47 +53,36 @@ def handle_postback(event):
     params = dict(item.split('=') for item in data.split('&'))
     step = params.get('step')
 
-    if step == "mood":
-        moods = ["ヘルシー", "コッテリ", "ガッツリ", "さっぱり", "時短", "和食", "中華", "洋食", "お菓子", "お任せ"]
-        items = [QuickReplyItem(action=PostbackAction(label=m, data=f"step=ask_fridge&{data}&mood={m}", display_text=m)) for m in moods]
-        items.append(QuickReplyItem(action=PostbackAction(label="最初から", data="step=start", display_text="最初に戻る")))
-        
-        with ApiClient(conf) as api_client:
-            line_api = MessagingApi(api_client)
-            line_api.reply_message(ReplyMessageRequest(
-                reply_token=tk,
-                messages=[TextMessage(text="今の気分やジャンルを教えてください！", quick_reply=QuickReply(items=items))]
-            ))
+    try:
+        if step == "mood":
+            moods = ["ヘルシー", "コッテリ", "ガッツリ", "さっぱり", "時短", "和食", "中華", "洋食", "お菓子", "お任せ"]
+            items = [QuickReplyItem(action=PostbackAction(label=m, data=f"step=ask_fridge&{data}&mood={m}", display_text=m)) for m in moods]
+            
+            with ApiClient(conf) as api_client:
+                line_api = MessagingApi(api_client)
+                line_api.reply_message(ReplyMessageRequest(
+                    reply_token=tk,
+                    messages=[TextMessage(text="今の気分やジャンルを教えてください！", quick_reply=QuickReply(items=items))]
+                ))
 
-    elif step == "ask_fridge":
-        with ApiClient(conf) as api_client:
-            line_api = MessagingApi(api_client)
-            line_api.reply_message(ReplyMessageRequest(
-                reply_token=tk,
-                messages=[TextMessage(text=f"【{params.get('time')}/{params.get('mood')}】ですね！\n\n冷蔵庫の食材や、優先して使いたいものを教えてください。")]
-            ))
+        elif step == "ask_fridge":
+            with ApiClient(conf) as api_client:
+                line_api = MessagingApi(api_client)
+                line_api.reply_message(ReplyMessageRequest(
+                    reply_token=tk,
+                    messages=[TextMessage(text=f"【{params.get('time')}/{params.get('mood')}】ですね！\n\n冷蔵庫にある食材を教えてください。(例：鶏肉、卵)")]
+                ))
+    except Exception as e:
+        send_error_to_line(tk, e)
 
-# --- 3. 食材入力から最新情報を検索して回答 ---
+# --- 3. 食材入力からAI生成 ---
 @handler.add(MessageEvent, message=TextMessageContent)
 def handle_final_input(event):
     msg = event.message.text
     tk = event.reply_token
 
-    # ユーザーが「朝ごはん」などの初期フロー以外のテキストを送った時に献立生成
     try:
-        prompt = f"""
-        あなたはプロの料理研究家です。最新のレシピ情報を元に提案してください。
-        
-        【条件】
-        食材・状況: {msg}
-
-        【指示】
-        1. 指定された食材に最適なレシピを1つ提案してください。
-        2. 実在するレシピを検索し、以下のサイトの中から現在アクセス可能な有効なURLを必ず1つ載せてください。
-           (クックパッド、クラシル、デリッシュキッチン、Nadia、レタスクラブ、キッコーマン)
-        3. ページが存在しないリンクは絶対に載せないでください。もし特定のURLが見つからない場合は、検索キーワードを添えて「〇〇で検索してみてください」と案内してください。
-        4. レシピ名、材料、時短・節約のコツも添えてください。
-        """
+        prompt = f"以下の食材で、実在するレシピを検索して提案して。URLも必ず載せて。\n食材: {msg}"
         
         response = model.generate_content(
             prompt,
@@ -104,7 +96,17 @@ def handle_final_input(event):
                 messages=[TextMessage(text=response.text)]
             ))
     except Exception as e:
-        print(f"Error: {e}")
+        send_error_to_line(tk, e)
+
+# --- エラー通知用の共通関数 ---
+def send_error_to_line(tk, e):
+    error_msg = f"⚠️エラー発生！\n【内容】: {str(e)[:150]}\n【詳細】: {traceback.format_exc()[:150]}"
+    with ApiClient(conf) as api_client:
+        line_api = MessagingApi(api_client)
+        line_api.reply_message(ReplyMessageRequest(
+            reply_token=tk,
+            messages=[TextMessage(text=error_msg)]
+        ))
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)))
