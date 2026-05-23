@@ -50,7 +50,7 @@ def handle_message(event):
         start_registration(u_id, tk, is_edit=True)
     elif u_id in user_temp_data and user_temp_data[u_id].get("step") == "waiting_allergy":
         user_temp_data[u_id].update({"allergy": msg, "step": "waiting_dislike"})
-        send_reply(tk, "次に【アレルギー以外の苦手なもの】を教えてください。")
+        send_reply(tk, "ありがとうございます！次に【苦手なもの（アレルギー以外）】を教えてください。\n（なければ「なし」でOK！）")
     elif u_id in user_temp_data and user_temp_data[u_id].get("step") == "waiting_dislike":
         register_new_user(event, msg)
     else:
@@ -79,32 +79,36 @@ def handle_postback(event):
             c = user_temp_data[u_id]["counts"]
             summary = f"男性{c['男性']}人、女性{c['女性']}人、子{c['お子様']}人、年配{c['ご年配']}人"
             user_temp_data[u_id].update({"family_summary": summary, "step": "waiting_allergy"})
-            send_reply(tk, f"構成：{summary}\n次に【アレルギー食材】を教えてください。")
+            send_reply(tk, f"【{summary}】で登録しますね。次に【アレルギー食材】を教えてください。")
         else:
             show_member_selector(tk, next_type, user_temp_data[u_id].get("is_edit"))
     elif params.get('step') == "reset_meal":
-        user_temp_data.pop(u_id, None)
-        show_meal_selection(tk)
+        user_temp_data.pop(u_id, None); show_meal_selection(tk)
     elif params.get('step') == "edit_force":
         start_registration(u_id, tk, is_edit=True)
     elif params.get('step') == "ask_question":
-        send_reply(tk, "レシピの不明点や代用の相談など、そのまま送ってくださいね！💬")
+        send_reply(tk, "レシピの不明点や代わりの食材など何でも聞いてくださいね！💬")
+    elif params.get('step') == "housework_advice":
+        # 家事アドバイスボタンが押されたとき
+        handle_housework_advice(event)
     elif params.get('meal'):
         user_temp_data[f"{u_id}_meal"] = {"morning": "朝ごはん", "lunch": "昼ごはん", "dinner": "夜ごはん"}.get(params.get('meal'))
         show_genre_selection(tk, user_temp_data[f"{u_id}_meal"])
     elif params.get('genre'):
         user_temp_data[f"{u_id}_genre"] = params.get('genre')
-        send_reply(tk, f"{params.get('genre')}ですね！使いたい食材を教えてください🍳")
+        send_reply(tk, f"{params.get('genre')}ですね！承知いたしました。使いたい食材を教えてください🍳")
     elif params.get('step') == "retry":
         try:
             sheet = get_sheet(); cell = sheet.find(u_id); handle_ai_generation(event, sheet, cell.row, is_retry=True)
         except: send_reply(tk, "食材を教えてください！")
 
 def show_meal_selection(tk):
+    # 店長提案の「家事アドバイス」ボタンを追加！
     qr = QuickReply(items=[
         QuickReplyItem(action=PostbackAction(label="朝ごはん ☀️", data="meal=morning")),
         QuickReplyItem(action=PostbackAction(label="昼ごはん 🕛", data="meal=lunch")),
         QuickReplyItem(action=PostbackAction(label="夜ごはん 🌙", data="meal=dinner")),
+        QuickReplyItem(action=PostbackAction(label="家事のアドバイス 💡", data="step=housework_advice")),
         QuickReplyItem(action=PostbackAction(label="登録内容変更 ⚙️", data="step=edit_force"))
     ])
     send_reply(tk, "今日のごはんは何にしましょうか？✨\n（1日5回までご利用いただけます）", qr)
@@ -117,7 +121,7 @@ def show_genre_selection(tk, meal_type):
         QuickReplyItem(action=PostbackAction(label="お任せ 🤝", data="genre=お任せ")),
         QuickReplyItem(action=PostbackAction(label="←戻る", data="step=reset_meal"))
     ])
-    send_reply(tk, f"{meal_type}ですね！気分を教えてください。", qr)
+    send_reply(tk, f"{meal_type}ですね！気分はどうですか？", qr)
 
 def register_new_user(event, dislike_msg):
     u_id = event.source.user_id
@@ -136,42 +140,49 @@ def register_new_user(event, dislike_msg):
 
 def handle_free_consultation(event):
     msg, u_id, tk = event.message.text, event.source.user_id, event.reply_token
-    judge_prompt = f"「食材名(A)」か「質問・会話(B)」か判断してAかBを回答：{msg}"
+    judge_prompt = f"「食材名(A)」か「質問(B)」か判断してAかBを回答。ただし挨拶・相槌は『C』：{msg}"
     judgement = model.generate_content(judge_prompt).text.strip()
     try:
         sheet = get_sheet(); cell = sheet.find(u_id)
-        if "A" in judgement:
+        if "C" in judgement:
+            show_meal_selection(tk)
+        elif "A" in judgement:
             user_temp_data[f"{u_id}_last_food"] = msg
             handle_ai_generation(event, sheet, cell.row)
         else:
-            send_reply(tk, "カジラク知恵袋がお答えします...📝")
-            row = sheet.row_values(cell.row)
-            fam = row[2] if len(row) > 2 else "不明"
-            res = model.generate_content(f"あなたは家事のプロです。家族構成{fam}。回答して：{msg}")
-            qr = QuickReply(items=[QuickReplyItem(action=PostbackAction(label="献立を考える 🍳", data="step=reset_meal"))])
-            with ApiClient(conf) as c:
-                MessagingApi(c).push_message(PushMessageRequest(to=u_id, messages=[TextMessage(text=res.text, quick_reply=qr)]))
+            handle_housework_advice(event) # 質問も家事アドバイスとして処理
     except: send_reply(tk, "もう一度お願いします。")
+
+def handle_housework_advice(event):
+    tk, u_id = event.reply_token, event.source.user_id
+    msg = event.message.text if hasattr(event.message, 'text') else "家事全般のアドバイスをください"
+    send_reply(tk, "家事のプロとしてアドバイスをまとめています...📝")
+    try:
+        sheet = get_sheet(); cell = sheet.find(u_id); row = sheet.row_values(cell.row)
+        fam = row[2] if len(row) > 2 else "不明"
+        prompt = f"あなたは家事のプロ「カジラク知恵袋」です。家族構成{fam}。生活が楽になるアドバイスを親身に回答して。質問：{msg}"
+        res = model.generate_content(prompt)
+        qr = QuickReply(items=[QuickReplyItem(action=PostbackAction(label="献立を考える 🍳", data="step=reset_meal"))])
+        with ApiClient(conf) as c:
+            MessagingApi(c).push_message(PushMessageRequest(to=u_id, messages=[TextMessage(text=res.text, quick_reply=qr)]))
+    except: send_reply(tk, "通信エラーです。")
 
 def handle_ai_generation(event, sheet, row_idx, is_retry=False):
     tk, u_id = event.reply_token, event.source.user_id
-    row = sheet.row_values(row_idx)
-    fam, alg, dsl = row[2], row[3], row[4]
+    row = sheet.row_values(row_idx); fam, alg, dsl = row[2], row[3], row[4]
     food = user_temp_data.get(f"{u_id}_last_food", "あるもの")
     meal, gen = user_temp_data.get(f"{u_id}_meal", "夜ごはん"), user_temp_data.get(f"{u_id}_genre", "お任せ")
     send_reply(tk, f"【{fam}】向けのレシピを考え中...🍳")
     try:
         prompt = f"""料理研究家として提案。構成:{fam} / 時間:{meal} / ジャンル:{gen} / 食材:{food} / アレルギー:{alg} / 苦手:{dsl}。
-        手順の中で子供用の取り分け等を具体的に書くこと。他のお肉代用案、実在URL、時短テクも。"""
+        手順内で子供等の取り分けを具体的に書く。他のお肉代用案、URL、時短テクも。システム用語抜きで。"""
         res = model.generate_content(prompt)
-        
-        # 文末に「1日5回まで」という案内を追加
         footer = "\n\n※カジラク知恵袋は1日5回までご利用いただけます。"
-        
         qr = QuickReply(items=[
-            QuickReplyItem(action=PostbackAction(label="このレシピに質問！ 🙋", data="step=ask_question")),
+            QuickReplyItem(action=PostbackAction(label="レシピに質問 🙋", data="step=ask_question")),
             QuickReplyItem(action=PostbackAction(label="別のレシピ", data="step=retry")),
-            QuickReplyItem(action=PostbackAction(label="最初から", data="step=reset_meal"))
+            QuickReplyItem(action=PostbackAction(label="最初から", data="step=reset_meal")),
+            QuickReplyItem(action=PostbackAction(label="登録内容変更 ⚙️", data="step=edit_force"))
         ])
         with ApiClient(conf) as c:
             MessagingApi(c).push_message(PushMessageRequest(to=u_id, messages=[TextMessage(text=res.text + footer, quick_reply=qr)]))
