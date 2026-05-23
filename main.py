@@ -9,16 +9,15 @@ import google.generativeai as genai
 
 app = Flask(__name__)
 
-# --- 1. 環境変数と設定 ---
-# LINEの設定
+# --- 設定：環境変数から読み込み ---
 conf = Configuration(access_token=os.environ["LINE_CHANNEL_ACCESS_TOKEN"])
 handler = WebhookHandler(os.environ["LINE_CHANNEL_SECRET"])
 
-# Geminiの設定（最も安定した書き方に統一）
+# --- Gemini設定：ここを1.5-flashに完全固定 ---
 genai.configure(api_key=os.environ["GEMINI_API_KEY"])
+# 'gemini-1.5-flash' とだけ書くのが、今の安定版ライブラリで最も確実な指定方法です
 model = genai.GenerativeModel('gemini-1.5-flash')
 
-# --- 2. Webhook受付部分 ---
 @app.route("/callback", methods=['POST'])
 def callback():
     signature = request.headers.get('X-Line-Signature', '')
@@ -29,7 +28,6 @@ def callback():
         abort(400)
     return 'OK'
 
-# --- 3. メッセージ処理部分 ---
 @handler.add(MessageEvent, message=TextMessageContent)
 def handle_message(event):
     msg = event.message.text
@@ -37,10 +35,10 @@ def handle_message(event):
 
     try:
         # AIで献立を生成
+        # モデル名を含めず、設定済みの model オブジェクトから生成します
         response = model.generate_content(f"食材「{msg}」の献立とURLを1つ教えて")
         ai_text = response.text
 
-        # LINEへ返信
         with ApiClient(conf) as api_client:
             line_api = MessagingApi(api_client)
             line_api.reply_message(
@@ -51,16 +49,17 @@ def handle_message(event):
             )
             
     except Exception as e:
-        # エラー時はログに詳細を出しつつ、ユーザーに通知
-        print("--- ERROR DETAILS ---")
+        # エラーが起きたらログに出す
+        print("--- ERROR LOG START ---")
         print(traceback.format_exc())
+        print("--- ERROR LOG END ---")
         
         with ApiClient(conf) as api_client:
             line_api = MessagingApi(api_client)
             line_api.reply_message(
                 ReplyMessageRequest(
                     reply_token=tk,
-                    messages=[TextMessage(text="ただいま混み合っています。少し時間を置いて食材名だけ送ってみてください。")]
+                    messages=[TextMessage(text="ただいま献立を考え中です。もう一度食材を送ってみてください。")]
                 )
             )
 
