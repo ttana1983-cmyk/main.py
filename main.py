@@ -48,7 +48,7 @@ def handle_message(event):
     else:
         handle_free_consultation(event)
 
-# --- 登録フロー（横幅を広げたデカボタン仕様） ---
+# --- 登録フロー ---
 def start_registration(u_id, tk, is_edit=False):
     user_temp_data[u_id] = {
         "counts": {"男性": 0, "女性": 0, "お子様": 0, "ご年配": 0},
@@ -57,7 +57,6 @@ def start_registration(u_id, tk, is_edit=False):
     show_main_category_selector(tk)
 
 def show_main_category_selector(tk):
-    # 文字数を増やすことでボタンの横幅を最大化
     items = [
         QuickReplyItem(action=PostbackAction(label="👨 男性の人数を設定する", data="select=男性")),
         QuickReplyItem(action=PostbackAction(label="👩 女性の人数を設定する", data="select=女性")),
@@ -103,14 +102,14 @@ def handle_postback(event):
         if ng == "DONE": register_new_user(event, "特になし")
         elif ng == "生もの":
             items = [
-                QuickReplyItem(action=PostbackAction(label="🍣 マグロだけは食べれる", data="exc=マグロ")),
-                QuickReplyItem(action=PostbackAction(label="🍣 サーモンだけは食べれる", data="exc=サーモン")),
-                QuickReplyItem(action=PostbackAction(label="🚫 生ものは一切食べられない", data="exc=全てNG"))
+                QuickReplyItem(action=PostbackAction(label="🍣 マグロは食べられる", data="exc=マグロ")),
+                QuickReplyItem(action=PostbackAction(label="🍣 サーモンは食べられる", data="exc=サーモン")),
+                QuickReplyItem(action=PostbackAction(label="🚫 生ものは一切NG", data="exc=全てNG"))
             ]
-            send_reply(tk, "生もの（刺身・寿司）の例外は？", QuickReply(items=items))
+            send_reply(tk, "生もの（刺身・寿司）の例外はありますか？", QuickReply(items=items))
         elif ng == "OTHER":
             user_temp_data[u_id]["step"] = "waiting_free_input"
-            send_reply(tk, "アレルギーやその他のNGを文字で送ってください。")
+            send_reply(tk, "アレルギーやその他のNG事項を教えてください。")
         else:
             user_temp_data[u_id]["ng_items"].append(ng); show_ng_selector(tk)
 
@@ -125,84 +124,94 @@ def handle_postback(event):
         show_genre_selection(tk, user_temp_data[f"{u_id}_meal"])
     elif params.get('genre'):
         user_temp_data[f"{u_id}_genre"] = params.get('genre')
-        send_reply(tk, f"【{params.get('genre')}】で考えます！食材を教えてください🍳")
+        send_reply(tk, f"【{params.get('genre')}】で承りました。食材を教えてください🍳")
     elif params.get('step') == "retry":
         try:
             sheet = get_sheet(); cell = sheet.find(u_id); handle_ai_generation(event, sheet, cell.row, is_retry=True)
-        except: send_reply(tk, "もう一度食材を教えてください。")
+        except: send_reply(tk, "申し訳ありません。もう一度食材を教えていただけますか？")
 
-# --- UI：1つずつのボタンの横幅を最大化した設定 ---
+# --- UI ---
 def show_ng_selector(tk):
     items = [
-        QuickReplyItem(action=PostbackAction(label="🙅 生もの（刺身等）が苦手", data="ng=生もの")),
-        QuickReplyItem(action=PostbackAction(label="🌶️ 八角・花椒の香りが苦手", data="ng=スパイス")),
+        QuickReplyItem(action=PostbackAction(label="🙅 生ものが苦手", data="ng=生もの")),
+        QuickReplyItem(action=PostbackAction(label="🌶️ 強い香辛料が苦手", data="ng=スパイス")),
         QuickReplyItem(action=PostbackAction(label="🍋 強い酸味が苦手", data="ng=酸味")),
-        QuickReplyItem(action=PostbackAction(label="⚠️ アレルギーを文字で入力", data="ng=OTHER")),
-        QuickReplyItem(action=PostbackAction(label="✨ 設定を完了して登録！ ✅", data="ng=DONE"))
+        QuickReplyItem(action=PostbackAction(label="⚠️ その他（文字入力）", data="ng=OTHER")),
+        QuickReplyItem(action=PostbackAction(label="✨ 設定完了 ✅", data="ng=DONE"))
     ]
-    send_reply(tk, "【苦手・こだわり】\n当てはまるものをタップしてください。", QuickReply(items=items))
+    send_reply(tk, "【苦手・こだわり】\n当てはまる項目を選択してください。", QuickReply(items=items))
 
 def show_meal_selection(tk):
     items = [
-        QuickReplyItem(action=PostbackAction(label="☀️ 朝ごはんの献立を作る", data="meal=morning")),
-        QuickReplyItem(action=PostbackAction(label="🕛 昼ごはんの献立を作る", data="meal=lunch")),
-        QuickReplyItem(action=PostbackAction(label="🌙 夜ごはんの献立を作る", data="meal=dinner")),
-        QuickReplyItem(action=PostbackAction(label="⚙️ 登録内容を変更する", data="step=edit_force"))
+        QuickReplyItem(action=PostbackAction(label="☀️ 朝ごはんを作る", data="meal=morning")),
+        QuickReplyItem(action=PostbackAction(label="🕛 昼ごはんを作る", data="meal=lunch")),
+        QuickReplyItem(action=PostbackAction(label="🌙 夜ごはんを作る", data="meal=dinner")),
+        QuickReplyItem(action=PostbackAction(label="⚙️ 設定を変更する", data="step=edit_force"))
     ]
-    send_reply(tk, "今日のごはんは何にしましょうか？✨", QuickReply(items=items))
+    send_reply(tk, "カジラク・コンシェルジュです。今日のご予定はいかがいたしますか？✨", QuickReply(items=items))
 
 def show_genre_selection(tk, meal_type):
     items = [
-        QuickReplyItem(action=PostbackAction(label="🍱 ほっこり和風な気分", data="genre=和風")),
-        QuickReplyItem(action=PostbackAction(label="🍝 お洒落な洋風な気分", data="genre=洋風")),
-        QuickReplyItem(action=PostbackAction(label="🥟 ガッツリ中華な気分", data="genre=中華")),
-        QuickReplyItem(action=PostbackAction(label="🤝 今日はお任せしたい", data="genre=お任せ"))
+        QuickReplyItem(action=PostbackAction(label="🍱 和風な気分", data="genre=和風")),
+        QuickReplyItem(action=PostbackAction(label="🍝 洋風な気分", data="genre=洋風")),
+        QuickReplyItem(action=PostbackAction(label="🥟 中華な気分", data="genre=中華")),
+        QuickReplyItem(action=PostbackAction(label="🤝 コンシェルジュにお任せ", data="genre=お任せ"))
     ]
-    send_reply(tk, f"【{meal_type}】ですね！今の気分は？", QuickReply(items=items))
+    send_reply(tk, f"【{meal_type}】ですね。今の気分を教えてください。", QuickReply(items=items))
 
-# --- データ処理・AI生成ロジック（安全管理を徹底） ---
 def register_new_user(event, other_msg):
     u_id = event.source.user_id; data = user_temp_data[u_id]; c = data["counts"]
     summary = f"男{c['男性']}女{c['女性']}子{c['お子様']}({data['child_detail']})年{c['ご年配']}"
     ng_list = ",".join(data["ng_items"]) + f" その他:{other_msg}"
     user_temp_data.pop(u_id, None)
     try:
-        sheet = get_sheet(); cell = sheet.find(u_id)
-        if cell: sheet.update_cell(cell.row, 3, summary); sheet.update_cell(cell.row, 4, ng_list)
-        else: sheet.append_row([u_id, "ユーザー", summary, ng_list, "", "Free", datetime.date.today().strftime("%Y/%m/%d")])
-        send_reply(event.reply_token, "設定が完了しました！"); show_meal_selection(event.reply_token)
-    except: send_reply(event.reply_token, "エラーです")
+        sheet = get_sheet()
+        try:
+            cell = sheet.find(u_id)
+            sheet.update_cell(cell.row, 3, summary); sheet.update_cell(cell.row, 4, ng_list)
+        except gspread.exceptions.CellNotFound:
+            sheet.append_row([u_id, "ユーザー", summary, ng_list, "", "Free", datetime.date.today().strftime("%Y/%m/%d")])
+        send_reply(event.reply_token, "家族設定を保存しました。"); show_meal_selection(event.reply_token)
+    except: send_reply(event.reply_token, "データの保存に失敗しました。")
 
 def handle_free_consultation(event):
     msg, u_id, tk = event.message.text, event.source.user_id, event.reply_token
-    res = model.generate_content(f"「食材名(A)」か「質問(B)」か判断。挨拶はC：{msg}").text.strip()
     try:
-        sheet = get_sheet(); cell = sheet.find(u_id)
-        if "C" in res: show_meal_selection(tk)
-        elif "A" in res: user_temp_data[f"{u_id}_last_food"] = msg; handle_ai_generation(event, sheet, cell.row)
-        else: send_reply(tk, "ご質問ですね！お答えします。")
-    except: send_reply(tk, "もう一度お願いします。")
+        sheet = get_sheet()
+        try:
+            cell = sheet.find(u_id)
+            res = model.generate_content(f"分類：A(食材) B(質問) C(挨拶)。判定せよ：{msg}").text.strip()
+            if "C" in res: show_meal_selection(tk)
+            elif "A" in res: user_temp_data[f"{u_id}_last_food"] = msg; handle_ai_generation(event, sheet, cell.row)
+            else:
+                answer = model.generate_content(f"コンシェルジュとして回答：{msg}").text
+                send_reply(tk, answer)
+        except gspread.exceptions.CellNotFound:
+            start_registration(u_id, tk)
+    except: send_reply(tk, "エラーが発生しました。時間を置いてお試しください。")
 
 def handle_ai_generation(event, sheet, row_idx, is_retry=False):
     tk, u_id = event.reply_token, event.source.user_id
     row = sheet.row_values(row_idx); fam, ng_all = row[2], row[3]
     food = user_temp_data.get(f"{u_id}_last_food", "あるもの")
     meal = user_temp_data.get(f"{u_id}_meal", "夜ごはん"); gen = user_temp_data.get(f"{u_id}_genre", "お任せ")
-    send_reply(tk, f"【{fam}】向けのレシピを考え中...🍳")
+    
+    # 最初の返信で「考え中」を伝える
+    send_reply(tk, "献立を構築しています。少々お待ちくださいませ。")
+    
     try:
-        prompt = f"""料理研究家として提案。構成:{fam} / 時間:{meal} / ジャンル:{gen} / 食材:{food} / 制限:{ng_all}。
-        【重要】
-        1. 冒頭で「器具・食器の殺菌」を必ず促すこと。
-        2. 低温調理は「63度で30分以上」等、文字化けしないプレーンテキストで。
-        3. 法律制限の生食禁止。煮魚・焼き魚はOK。
-        4. スパイス・酸味NG留意。再提案時は別の調理法で。URL禁止。"""
+        prompt = f"""あなたはプロの家事コンシェルジュです。家族構成:{fam}、時間帯:{meal}、気分:{gen}、食材:{food}、制限:{ng_all}に基づき、15分で完成する引き算レシピを1つ提案してください。
+        【指針】丁寧で安心感のある言葉遣い。冒頭で必ず衛生管理への注意を促す。URLは含めない。プレーンテキストで。"""
         res = model.generate_content(prompt)
         qr = QuickReply(items=[
-            QuickReplyItem(action=PostbackAction(label="🔄 別のレシピ(同じ食材)を提案", data="step=retry")),
-            QuickReplyItem(action=PostbackAction(label="🏠 最初（メニュー）に戻る", data="step=reset_meal"))
+            QuickReplyItem(action=PostbackAction(label="🔄 別のレシピを提案", data="step=retry")),
+            QuickReplyItem(action=PostbackAction(label="🏠 メニューに戻る", data="step=reset_meal"))
         ])
-        with ApiClient(conf) as c: MessagingApi(c).push_message(PushMessageRequest(to=u_id, messages=[TextMessage(text=res.text, quick_reply=qr)]))
-    except: print("AI Error")
+        with ApiClient(conf) as c:
+            MessagingApi(c).push_message(PushMessageRequest(to=u_id, messages=[TextMessage(text=res.text, quick_reply=qr)]))
+    except:
+        with ApiClient(conf) as c:
+            MessagingApi(c).push_message(PushMessageRequest(to=u_id, messages=[TextMessage(text="申し訳ありません、献立の作成に失敗しました。")]))
 
 def send_reply(tk, text, quick_reply=None):
     with ApiClient(conf) as c: MessagingApi(c).reply_message(ReplyMessageRequest(reply_token=tk, messages=[TextMessage(text=text, quick_reply=quick_reply)]))
