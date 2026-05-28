@@ -127,7 +127,7 @@ def handle_postback(event):
         send_reply(tk, f"【{params.get('genre')}】で承りました。食材を教えてください🍳")
     elif params.get('step') == "retry":
         try:
-            sheet = get_sheet(); cell = sheet.find(u_id); handle_ai_generation(event, sheet, cell.row, is_retry=True)
+            sheet = get_sheet(); cell = sheet.find(u_id); handle_ai_generation(event, sheet, cell.row)
         except: send_reply(tk, "申し訳ありません。もう一度食材を教えていただけますか？")
 
 # --- UI ---
@@ -188,25 +188,36 @@ def handle_free_consultation(event):
         sheet = get_sheet()
         try:
             cell = sheet.find(u_id)
-            res = model.generate_content(f"分類：A(食材) B(質問) C(挨拶)。判定せよ：{msg}").text.strip()
-            if "C" in res: show_meal_selection(tk)
-            elif "A" in res: user_temp_data[f"{u_id}_last_food"] = msg; handle_ai_generation(event, sheet, cell.row)
+            # 分類判定は軽いのでReplyTokenを使用
+            res_gen = model.generate_content(f"分類：A(食材) B(質問) C(挨拶)。判定せよ：{msg}")
+            res = res_gen.text.strip()
+            
+            if "C" in res:
+                show_meal_selection(tk)
+            elif "A" in res:
+                user_temp_data[f"{u_id}_last_food"] = msg
+                # 食材提案フローへ。ここからPushメッセージに切り替わる
+                handle_ai_generation(event, sheet, cell.row)
             else:
                 answer = model.generate_content(f"コンシェルジュとして回答：{msg}").text
                 send_reply(tk, answer)
         except gspread.exceptions.CellNotFound:
             start_registration(u_id, tk)
-    except: send_reply(tk, "エラーが発生しました。時間を置いてお試しください。")
+    except Exception as e:
+        print(f"Error: {e}")
+        send_reply(tk, "申し訳ありません、一時的に考え込んでしまいました。もう一度お試しください。")
 
-def handle_ai_generation(event, sheet, row_idx, is_retry=False):
+def handle_ai_generation(event, sheet, row_idx):
     tk, u_id = event.reply_token, event.source.user_id
     row = sheet.row_values(row_idx); fam, ng_all = row[2], row[3]
     food = user_temp_data.get(f"{u_id}_last_food", "あるもの")
     meal = user_temp_data.get(f"{u_id}_meal", "夜ごはん"); gen = user_temp_data.get(f"{u_id}_genre", "お任せ")
     
+    # 【重要】まずはReplyTokenを使い切って即レスする
     send_reply(tk, "献立を構築しています。少々お待ちくださいませ。")
     
     try:
+        # 重たいAI生成処理
         prompt = f"""あなたはプロの家事コンシェルジュです。
         構成:{fam}、時間帯:{meal}、気分:{gen}、食材:{food}、制限:{ng_all}に基づき、15分で完成する引き算レシピを1つ提案してください。
         【指針】
@@ -215,19 +226,34 @@ def handle_ai_generation(event, sheet, row_idx, is_retry=False):
         ・冒頭で必ず衛生管理への注意。
         ・URLは含めない。プレーンテキストで。"""
         res = model.generate_content(prompt)
+        
         qr = QuickReply(items=[
             QuickReplyItem(action=PostbackAction(label="🔄 別のレシピを提案", data="step=retry")),
             QuickReplyItem(action=PostbackAction(label="⚙️ 家族設定を変更する", data="step=edit_force")),
             QuickReplyItem(action=PostbackAction(label="🏠 メニューに戻る", data="step=reset_meal"))
         ])
+        
+        # 【重要】ReplyTokenは失効している可能性が高いので、PushMessageでレシピを送る
         with ApiClient(conf) as c:
-            MessagingApi(c).push_message(PushMessageRequest(to=u_id, messages=[TextMessage(text=res.text, quick_reply=qr)]))
-    except:
+            api = MessagingApi(c)
+            api.push_message(PushMessageRequest(
+                to=u_id,
+                messages=[TextMessage(text=res.text, quick_reply=qr)]
+            ))
+    except Exception as e:
+        print(f"Push Error: {e}")
         with ApiClient(conf) as c:
-            MessagingApi(c).push_message(PushMessageRequest(to=u_id, messages=[TextMessage(text="申し訳ありません、献立の作成に失敗しました。")]))
+            MessagingApi(c).push_message(PushMessageRequest(
+                to=u_id,
+                messages=[TextMessage(text="申し訳ありません、献立の作成に失敗しました。時間をおいて食材を教えてください。")]
+            ))
 
 def send_reply(tk, text, quick_reply=None):
-    with ApiClient(conf) as c: MessagingApi(c).reply_message(ReplyMessageRequest(reply_token=tk, messages=[TextMessage(text=text, quick_reply=quick_reply)]))
+    with ApiClient(conf) as c:
+        MessagingApi(c).reply_message(ReplyMessageRequest(
+            reply_token=tk,
+            messages=[TextMessage(text=text, quick_reply=quick_reply)]
+        ))
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)))
