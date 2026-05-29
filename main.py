@@ -1,75 +1,92 @@
 import os
 import sys
+import json
+import google.generativeai as genai
 from flask import Flask, request, abort, render_template, jsonify
 from linebot.v3 import WebhookHandler
 from linebot.v3.exceptions import InvalidSignatureError
 from linebot.v3.messaging import (
-    Configuration,
-    ApiClient,
-    MessagingApi,
-    ReplyMessageRequest,
-    TextMessage,
-    QuickReply,
-    QuickReplyItem,
-    URIAction
+    Configuration, ApiClient, MessagingApi, ReplyMessageRequest,
+    TextMessage, QuickReply, QuickReplyItem, URIAction
 )
 from linebot.v3.webhooks import MessageEvent, TextMessageContent
 
 app = Flask(__name__)
 
-# --- 環境設定 (Renderの環境変数から取得) ---
+# --- 環境設定 ---
 channel_secret = os.getenv('LINE_CHANNEL_SECRET')
 channel_access_token = os.getenv('LINE_CHANNEL_ACCESS_TOKEN')
+gemini_api_key = os.getenv('GEMINI_API_KEY')
 
-if channel_secret is None or channel_access_token is None:
-    print('Specify LINE_CHANNEL_SECRET and LINE_CHANNEL_ACCESS_TOKEN as environment variables.')
-    sys.exit(1)
+# Geminiの初期設定
+genai.configure(api_key=gemini_api_key)
+model = genai.GenerativeModel('gemini-3.5-flash')
 
 configuration = Configuration(access_token=channel_access_token)
 handler = WebhookHandler(channel_secret)
 
-# --- 1. LIFFページ（トップ画面）を表示する設定 ---
+# --- 1. LIFF表示用 ---
 @app.route("/")
 def index():
-    # templatesフォルダの中のindex.htmlを表示します
     return render_template("index.html")
 
-# --- 2. レシピ生成API（LIFFから呼ばれる処理） ---
+# --- 2. AIレシピ生成 (Gemini API 連携) ---
 @app.route("/api/generate-recipe")
 def generate_recipe():
-    query = request.args.get('query', '')
+    query = request.args.get('query', 'おまかせ')
     
-    # 本来はここでAI（Gemini等）を動かしますが、まずはテスト用にデータを返します
-    # 店長、ここを後ほどAI連携に書き換えましょう！
-    recipe_data = {
-        "name": f"{query}で作る！コンシェルジュ特製メニュー",
-        "time": "15分",
-        "cost": "約250円",
-        "main": "メイン食材",
-        "tip": "強火でサッと！",
-        "ingredients": [
-            {"name": "メイン食材", "amount": "200g"},
-            {"name": "付け合わせ野菜", "amount": "1/2個"},
-            {"name": "調味料セット", "amount": "少々"}
-        ],
-        "steps": [
-            "1. 食材を一口大に切り、下味をつけます。",
-            "2. フライパンを熱し、焼き色がつくまで炒めます。",
-            "3. 最後に調味料を絡めて完成です！"
-        ]
-    }
-    return jsonify(recipe_data)
+    # 徹底したJSON形式での指示
+    prompt = f"""
+    あなたは家事の負担を減らす「カジラク・コンシェルジュ」です。
+    ユーザーの要望: 「{query}」
+    
+    以下の条件でレシピを1つ提案してください：
+    1. 15分以内で作れる時短レシピ。
+    2. 安価な食材を使った節約レシピ。
+    3. 初心者でも迷わない簡潔な工程。
 
-# --- 3. 買い物リスト保存API ---
+    回答は必ず以下のJSON形式のみとし、他の文章は一切含めないでください。
+    {{
+      "name": "料理名",
+      "time": "〇分",
+      "cost": "約〇円",
+      "main": "主な食材",
+      "tip": "プロの時短コツを一言",
+      "ingredients": [
+        {{"name": "食材1", "amount": "分量"}},
+        {{"name": "食材2", "amount": "分量"}}
+      ],
+      "steps": [
+        "1. 〇〇をカットする",
+        "2. 〇〇を炒める",
+        "3. 味付けして完成"
+      ]
+    }}
+    """
+
+    try:
+        response = model.generate_content(prompt)
+        # AIの回答からJSONを抽出
+        clean_text = response.text.replace('```json', '').replace('```', '').strip()
+        return jsonify(json.loads(clean_text))
+    except Exception as e:
+        print(f"Gemini API Error: {e}")
+        return jsonify({
+            "name": "申し訳ありません", "time": "-", "cost": "-", "main": "-", "tip": "再試行してください",
+            "ingredients": [{"name": "エラー", "amount": "-"}],
+            "steps": ["レシピの生成に失敗しました。もう一度お試しください。"]
+        })
+
+# --- 3. 買い物リスト保存用API ---
 @app.route("/api/add-to-cart", methods=['POST'])
 def add_to_cart():
     data = request.get_json()
     items = data.get('items', [])
+    # ここにスプレッドシートへの保存などを追記可能です
     print(f"買い物リストに追加: {items}")
-    # ここでスプレッドシート等に保存する処理を入れます
     return jsonify({"status": "success"})
 
-# --- 4. LINE Webhookの入り口 ---
+# --- 以降、LINE Webhook関連 ---
 @app.route("/callback", methods=['POST'])
 def callback():
     signature = request.headers['x-line-signature']
@@ -80,45 +97,31 @@ def callback():
         abort(400)
     return 'OK'
 
-# --- 5. LINEメッセージを受け取った時の処理 ---
 @handler.add(MessageEvent, content_type=TextMessageContent)
 def handle_message(event):
     text = event.message.text
     tk = event.reply_token
-
     if "レシピ" in text or "献立" in text:
         handle_recipe_induction(event, tk)
     else:
-        send_reply(tk, "コンシェルジュです。左下のメニューからレシピの提案ができますよ！")
+        send_reply(tk, "コンシェルジュです。左下のメニューからレシピ提案をどうぞ！")
 
-# --- 6. LIFFへの誘導ロジック ---
 def handle_recipe_induction(event, tk):
     base_url = "https://liff.line.me/2010225388-rXh2LiOR"
-    # ユーザーが送ったテキストをそのままパラメータにしてLIFFへ送る
     target_url = f"{base_url}?query={event.message.text}"
-
-    message_text = (
-        "ありがとうございます！今の気分にぴったりの献立を検討中です。\n\n"
-        "準備が整い次第、以下のページでレシピを表示します。足りない食材のチェックもこちらからどうぞ！"
-    )
-
+    msg = "コンシェルジュが献立を検討中です。\n準備ができたら、下のボタンから確認してくださいね。"
     quick_reply = QuickReply(items=[
-        QuickReplyItem(
-            action=URIAction(label="🍳 レシピを確認する", uri=target_url)
-        )
+        QuickReplyItem(action=URIAction(label="🍳 レシピを確認する", uri=target_url))
     ])
-    send_reply(tk, message_text, quick_reply=quick_reply)
+    send_reply(tk, msg, quick_reply=quick_reply)
 
-# --- 7. 返信用共通関数 ---
 def send_reply(tk, text, quick_reply=None):
     with ApiClient(configuration) as api_client:
         line_bot_api = MessagingApi(api_client)
-        line_bot_api.reply_message(
-            ReplyMessageRequest(
-                reply_token=tk,
-                messages=[TextMessage(text=text, quick_reply=quick_reply)]
-            )
-        )
+        line_bot_api.reply_message(ReplyMessageRequest(
+            reply_token=tk,
+            messages=[TextMessage(text=text, quick_reply=quick_reply)]
+        ))
 
 if __name__ == "__main__":
     port = int(os.getenv("PORT", 5000))
